@@ -130,3 +130,21 @@ app.post('/api/auth/login', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
+// Ruta para actualizar foto de portada (banner) o avatar
+app.post('/api/profile/update-banner', async (req, res) => {
+  const { userId, bannerUrl } = req.body;
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ banner_url: bannerUrl })
+      .eq('id', userId)
+      .select();
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ message: "Portada actualizada con éxito", profile: data[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
