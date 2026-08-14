@@ -1,76 +1,132 @@
-﻿const express = require('express');
+const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = 5000;
-const RIOT_API_KEY = 'RGAPI-ed4966a7-2de9-4463-895f-2f04c9d6b7c5';
+const PORT = process.env.PORT || 5000;
+const RIOT_API_KEY = process.env.RIOT_API_KEY;
 
-// Servidores regionales para Spectator (Para LAS/LAN usamos la plataforma la2/la1)
-// Por defecto consultamos la2 (LAS), pero luego lo haremos dinámico.
-const REGION_ACCOUNT = 'americas';
-const SPECTATOR_REGION = 'la2'; // la2 = LAS, la1 = LAN, na1 = NA
+// Inicializar Supabase
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-app.get('/api/player/:gameName/:tagLine', async (req, res) => {
-    const { gameName, tagLine } = req.params;
+// 1. Ruta para buscar invocador y su partida (Existente)
+app.get('/api/player/:name/:tag', async (req, res) => {
+  const { name, tag } = req.params;
+  try {
+    const accountRes = await axios.get(
+      `https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
+      { headers: { "X-Riot-Token": RIOT_API_KEY } }
+    );
+    const { puuid, gameName, tagLine } = accountRes.data;
 
+    const summonerRes = await axios.get(
+      `https://la2.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${puuid}`,
+      { headers: { "X-Riot-Token": RIOT_API_KEY } }
+    );
+    const { id: summonerId, profileIconId, summonerLevel } = summonerRes.data;
+
+    let spectatorData = null;
     try {
-        // 1. Obtener datos de la cuenta (PUUID)
-        const accountUrl = `https://${REGION_ACCOUNT}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`;
-        
-        const accountResponse = await axios.get(accountUrl, {
-            headers: { 'X-Riot-Token': RIOT_API_KEY }
-        });
-
-        const { puuid, gameName: rName, tagLine: rTag } = accountResponse.data;
-
-        // 2. Consultar si está en partida en tiempo real (Spectator V5)
-        let inGameData = null;
-        let isPlaying = false;
-
-        try {
-            const spectatorUrl = `https://${SPECTATOR_REGION}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/${puuid}`;
-            const spectatorResponse = await axios.get(spectatorUrl, {
-                headers: { 'X-Riot-Token': RIOT_API_KEY }
-            });
-
-            isPlaying = true;
-            inGameData = {
-                gameMode: spectatorResponse.data.gameMode, // CLASSIC (Grieta), ARAM, etc.
-                gameLength: spectatorResponse.data.gameLength, // Segundos en partida
-                mapId: spectatorResponse.data.mapId
-            };
-        } catch (spectatorError) {
-            // Si da 404 significa que NO está en partida activa, es normal.
-            isPlaying = false;
-        }
-
-        res.json({
-            success: true,
-            player: {
-                puuid,
-                gameName: rName,
-                tagLine: rTag,
-                isPlaying,
-                gameInfo: inGameData
-            }
-        });
-
-    } catch (error) {
-        const status = error.response?.status || 500;
-        const message = error.response?.data?.status?.message || error.message;
-
-        res.status(status).json({
-            success: false,
-            status,
-            message
-        });
+      const spectatorRes = await axios.get(
+        `https://la2.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/${puuid}`,
+        { headers: { "X-Riot-Token": RIOT_API_KEY } }
+      );
+      spectatorData = spectatorRes.data;
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        spectatorData = null; // No está en partida
+      } else {
+        throw err;
+      }
     }
+
+    res.json({
+      gameName,
+      tagLine,
+      profileIconId,
+      summonerLevel,
+      inGame: !!spectatorData,
+      gameData: spectatorData
+    });
+
+  } catch (error) {
+    console.error(error.message);
+    res.status(error.response ? error.response.status : 500).json({
+      error: "Error al consultar la API de Riot Games"
+    });
+  }
+});
+
+// 2. Ruta de Registro de Usuario
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, username, gameName, tagLine } = req.body;
+
+  try {
+    // Registrar en Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+
+    if (authError) return res.status(400).json({ error: authError.message });
+
+    // Guardar perfil extendido en la tabla 'profiles'
+    if (authData.user) {
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .insert([
+          {
+            id: authData.user.id,
+            username: username,
+            game_name: gameName,
+            tag_line: tagLine
+          }
+        ]);
+
+      if (profileError) return res.status(400).json({ error: profileError.message });
+    }
+
+    res.json({ message: "Usuario registrado con éxito", user: authData.user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Ruta de Inicio de Sesión
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Obtener datos del perfil guardado
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', data.user.id)
+      .single();
+
+    res.json({
+      session: data.session,
+      user: data.user,
+      profile
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor listo en http://localhost:${PORT}`);
+  console.log(`Servidor corriendo en puerto ${PORT}`);
 });
