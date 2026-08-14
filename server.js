@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 5000;
 const RIOT_API_KEY = process.env.RIOT_API_KEY;
 
 // Inicializar Supabase
-const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseUrl = process.env.SUPABASE_URL || 'https://hibhkohvrujbmmgrftfp.supabase.co';
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
