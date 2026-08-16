@@ -148,27 +148,52 @@ app.post('/api/profile/update-banner', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Ruta para obtener las últimas partidas del jugador
-app.get('/api/matches/:gameName/:tagLine', async (req, res) => {
+// Obtener perfil y rangos de LoL
+app.get('/api/player/:gameName/:tagLine', async (req, res) => {
   const { gameName, tagLine } = req.params;
   const RIOT_API_KEY = process.env.RIOT_API_KEY;
 
   if (!RIOT_API_KEY) {
-    return res.status(500).json({ error: 'Falta configurar RIOT_API_KEY en Render' });
+    return res.status(500).json({ error: 'Falta RIOT_API_KEY en Render' });
   }
 
   try {
-    // 1. Obtener el PUUID del jugador
+    // 1. Obtener PUUID
     const accountRes = await fetch(
       `https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}?api_key=${RIOT_API_KEY}`
     );
-
-    if (!accountRes.ok) {
-      return res.status(accountRes.status).json({ error: 'Jugador no encontrado' });
-    }
-
+    if (!accountRes.ok) return res.status(404).json({ error: 'Jugador no encontrado' });
     const accountData = await accountRes.json();
-    const puuid = accountData.puuid;
+
+    // 2. Obtener Summoner ID e Icono
+    const summonerRes = await fetch(
+      `https://la2.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${accountData.puuid}?api_key=${RIOT_API_KEY}`
+    );
+    if (!summonerRes.ok) return res.status(404).json({ error: 'Invocador no encontrado en LAS' });
+    const summonerData = await summonerRes.json();
+
+    // 3. Obtener Rangos (SoloQ / Flex)
+    const leagueRes = await fetch(
+      `https://la2.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerData.id}?api_key=${RIOT_API_KEY}`
+    );
+    const leagueData = leagueRes.ok ? await leagueRes.json() : [];
+
+    const soloQueue = leagueData.find(e => e.queueType === 'RANKED_SOLO_5x5');
+    const flexQueue = leagueData.find(e => e.queueType === 'RANKED_FLEX_SR');
+
+    res.json({
+      puuid: accountData.puuid,
+      profileIconId: summonerData.profileIconId,
+      summonerLevel: summonerData.summonerLevel,
+      solo: soloQueue ? { tier: soloQueue.tier, rank: soloQueue.rank, lp: soloQueue.leaguePoints, wins: soloQueue.wins, losses: soloQueue.losses } : null,
+      flex: flexQueue ? { tier: flexQueue.tier, rank: flexQueue.rank, lp: flexQueue.leaguePoints, wins: flexQueue.wins, losses: flexQueue.losses } : null
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
 
     // 2. Obtener las últimas 5 partidas
     const matchesRes = await fetch(
