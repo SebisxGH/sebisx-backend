@@ -148,3 +148,67 @@ app.post('/api/profile/update-banner', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// Ruta para obtener las últimas partidas del jugador
+app.get('/api/matches/:gameName/:tagLine', async (req, res) => {
+  const { gameName, tagLine } = req.params;
+  const RIOT_API_KEY = process.env.RIOT_API_KEY;
+
+  if (!RIOT_API_KEY) {
+    return res.status(500).json({ error: 'Falta configurar RIOT_API_KEY en Render' });
+  }
+
+  try {
+    // 1. Obtener el PUUID del jugador
+    const accountRes = await fetch(
+      `https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}?api_key=${RIOT_API_KEY}`
+    );
+
+    if (!accountRes.ok) {
+      return res.status(accountRes.status).json({ error: 'Jugador no encontrado' });
+    }
+
+    const accountData = await accountRes.json();
+    const puuid = accountData.puuid;
+
+    // 2. Obtener las últimas 5 partidas
+    const matchesRes = await fetch(
+      `https://americas.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5&api_key=${RIOT_API_KEY}`
+    );
+
+    if (!matchesRes.ok) {
+      return res.status(matchesRes.status).json({ error: 'No se encontraron partidas' });
+    }
+
+    const matchIds = await matchesRes.json();
+
+    // 3. Traer los detalles de cada partida
+    const matchDetailsPromises = matchIds.map(async (matchId) => {
+      const matchRes = await fetch(
+        `https://americas.api.riotgames.com/lol/match/v5/matches/${matchId}?api_key=${RIOT_API_KEY}`
+      );
+      const matchData = await matchRes.json();
+
+      const participant = matchData.info.participants.find(p => p.puuid === puuid);
+
+      return {
+        matchId: matchData.metadata.matchId,
+        gameMode: matchData.info.gameMode,
+        win: participant ? participant.win : false,
+        championName: participant ? participant.championName : 'Desconocido',
+        kills: participant ? participant.kills : 0,
+        deaths: participant ? participant.deaths : 0,
+        assists: participant ? participant.assists : 0,
+        kda: participant && participant.deaths > 0 
+          ? ((participant.kills + participant.assists) / participant.deaths).toFixed(2) 
+          : (participant ? (participant.kills + participant.assists).toFixed(2) : '0.00')
+      };
+    });
+
+    const matchesList = await Promise.all(matchDetailsPromises);
+    res.json(matchesList);
+
+  } catch (err) {
+    console.error('Error al obtener partidas:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
